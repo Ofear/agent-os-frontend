@@ -16,25 +16,77 @@ This project aims to build a **local-first, cross-platform (Mobile + Desktop) in
 | **Control** | Reply / Reaction | Pause, Intervene, Edit Memory, Fork Session |
 | **Input** | Keyboard Dominant | Voice-First (PTT), Multimodal (Screen/Cam) |
 
-## Tech Stack Recommendation
+## Tech Stack & Libraries (Lazy Genius Audit)
 
-### Frontend: Flutter (Dart)
-*Why?*
-- **Rendering Performance:** Skia/Impeller engine guarantees 60/120fps "native" feel, critical for dense UI (streaming tokens + rendering terminal widgets simultaneously).
-- **Multi-Platform:** True single codebase for iOS, Android, macOS, Windows, and Linux.
-- **Fidelity:** Agents output markdown, code, and raw data. Flutter's control over every pixel allows for custom "Terminal Widgets" and "Code Editors" that perform better than React Native's bridge implementations.
+We are not reinventing the wheel. We are assembling a Ferrari from parts.
 
-### Backend / Protocol: gRPC + WebSockets (with CRDTs)
-*Why?*
-- **Streaming:** gRPC is built for streaming structured data (e.g., token-by-token generation + metadata).
-- **Sync:** We need offline support. A standard REST API is insufficient.
-- **Protocol:** Use a custom protocol or extend an existing standard (like Matrix, but likely too heavy). A lightweight sync engine using **CRDTs (Conflict-free Replicated Data Types)** ensures that if the user edits a prompt offline while the agent is replying, the state merges correctly when reconnected.
+### 1. Chat UI: `flutter_chat_ui` (Flyer Chat)
+*   **Verdict:** **ADOPT & EXTEND.**
+*   **Why:** Building a chat UI from scratch is a trap. `flutter_chat_ui` is the most mature, customizable package.
+*   **The "Lazy" Win:** It handles the infinite scroll, keyboard avoidance, and basic bubbles perfectly.
+*   **The "Genius" Tweak:** We leverage its `custom` message type heavily.
+    *   Standard text -> Markdown bubble.
+    *   Tool use -> Custom "Terminal" widget.
+    *   Thought trace -> Custom "Accordion" widget.
+    *   *Note:* We will use `flutter_markdown` with `syntax_highlighter` for code blocks inside the bubbles.
 
-### Database: SQLite (Local) + PGLite/Postgres (Server)
-*Why?*
-- **Local-First:** The app must work offline. Agents are tools; tools must be available instantly.
-- **SQLite:** The industry standard for local edge storage. Fast, reliable.
-- **Vector Extensions:** Use `sqlite-vec` locally for fast semantic search over recent agent history without hitting the server.
+### 2. State Management: `riverpod` (Hooks)
+*   **Verdict:** **ADOPT.**
+*   **Why:** `bloc` is too much boilerplate for a rapid iteration cycle. `riverpod` allows dynamic provider generation (`family` providers), which is critical for handling **N** parallel agents.
+*   **Architecture:**
+    *   `agentProvider(id)`: Returns the state of a specific agent session.
+    *   `activeAgentIdProvider`: Controls which agent is currently visible.
+    *   This makes "switching agents" as instant as changing a variable.
+
+### 3. Local DB: `drift` (over `sqflite`)
+*   **Verdict:** **ADOPT.**
+*   **Why:** `sqflite` is raw SQL (error-prone). `drift` provides type-safe Dart APIs and reactive streams.
+*   **The Win:** We can bind the Chat UI directly to a `watch()` stream from the DB. When an agent writes a message in the background, the UI updates automatically without manual refresh logic.
+
+### 4. Notifications: `flutter_local_notifications`
+*   **Verdict:** **ADOPT.**
+*   **Why:** Industry standard.
+*   **Use Case:** Critical for multi-agent workflows. When Agent A finishes a long task (e.g., "Researching API"), the user gets a system notification: *"Agent A: Task Complete. Click to review."*
+
+### 5. Markdown & Code: `flutter_markdown`
+*   **Verdict:** **ADOPT.**
+*   **Config:** Must use custom builders for `code` blocks to support syntax highlighting and "Copy" buttons.
+
+---
+
+## Multi-Agent Architecture
+
+The "Agent OS" treats agents like Discord Servers or Browser Tabs, not just a single chat thread.
+
+### The "Session" Model
+*   **Concept:** A **Session** is a persistent container for an agent's lifecycle.
+*   **State:** Each Session has:
+    *   **ID:** UUID.
+    *   **Context:** Vector store + Short-term memory.
+    *   **Status:** `Idle`, `Thinking`, `Tooling`, `Paused`, `AwaitingInput`.
+    *   **Socket:** Dedicated WebSocket connection to the backend.
+
+### Parallel Execution (The "Background" Layer)
+Agents must be **independent processes**.
+*   **Scenario:** You ask Agent A to "Scrape this website" (takes 2 mins). You immediately switch to Agent B to ask a quick question.
+*   **Implementation:**
+    *   The `AgentService` in Flutter holds a `Map<String, AgentController>`.
+    *   Background agents continue to receive WebSocket events.
+    *   If a background agent emits a `NeedsUserAction` event (e.g., "Login required"), it triggers a `local_notification` and adds a "Badge" (red dot) to its icon in the sidebar.
+
+### UI Layout: "The Omnibar"
+*   **Left Sidebar (The Agent Dock):**
+    *   Vertical list of avatars (like Discord servers).
+    *   **Active:** Highlighted.
+    *   **Busy:** Spinner overlay on avatar.
+    *   **Alert:** Red dot/badge.
+*   **State Switching:**
+    *   User clicks Agent B.
+    *   `activeAgentId` updates.
+    *   Main Chat View rebuilds instantly using `agentProvider(agentB_ID)`.
+    *   Scroll position is preserved per-agent.
+
+---
 
 ## Architecture
 
